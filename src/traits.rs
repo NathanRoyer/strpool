@@ -13,6 +13,12 @@ impl core::fmt::Display for PoolStr {
     }
 }
 
+// It's possible that two copies of the same
+// string exist at the same time in the store
+// even if it's unlikely (see intern_1_127).
+// for this reason, we have to fall back to
+// a traditional comparison if the pointers
+// aren't the same.
 impl PartialEq for PoolStr {
     fn eq(&self, other: &Self) -> bool {
            self.len_ptr == other.len_ptr
@@ -25,6 +31,12 @@ impl Eq for PoolStr {}
 impl PartialEq<str> for PoolStr {
     fn eq(&self, other: &str) -> bool {
         self.deref() == other
+    }
+}
+
+impl PartialEq<PoolStr> for str {
+    fn eq(&self, other: &PoolStr) -> bool {
+        self == other.deref()
     }
 }
 
@@ -68,5 +80,11 @@ impl PartialOrd<PoolStr> for PoolStr {
     #[inline]
     fn partial_cmp(&self, other: &PoolStr) -> Option<core::cmp::Ordering> {
         self.deref().partial_cmp(other.deref())
+    }
+}
+
+impl Ord for PoolStr {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.deref().cmp(other.deref())
     }
 }

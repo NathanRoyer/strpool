@@ -153,13 +153,23 @@ impl PoolInner {
                                 return PoolStr::new(&page.entries[i]);
                             }
                         } else if len == 0 {
+                            // this entry is available
                             if s + slice.len() <= PAGE_CAPACITY {
+                                // there is enough space, meaning `string` isn't
+                                // present in next pages (except if another thread
+                                // was trying to intern the same string at the same
+                                // moment, but this is highly unlikely + doesn't
+                                // affect the external behaviour, it's only less
+                                // efficient).
                                 let slice_len = slice.len();
                                 let len = slice_len as u8 | NOT_READY;
 
                                 if try_set_len(&page.entries[i], 0, len) {
+                                    // the NOT_READY flag is set, we can copy the bytes
                                     let j = s + slice_len;
                                     page.entries[s..j].copy_from_slice(slice);
+
+                                    // remove NOT_READY flag
                                     assert!(try_set_len(&page.entries[i], len, len & LEN_MASK));
 
                                     self.inc_ref_count();
@@ -376,6 +386,7 @@ impl Deref for PoolStr {
 }
 
 fn large_string_layout(len: usize) -> Layout {
+    // this currently wastes 3-7 bytes (todo)
     let size = size_of::<LargeStringHeader>() + len;
     Layout::from_size_align(size, align_of::<usize>()).unwrap()
 }
@@ -442,11 +453,11 @@ impl Clone for Pool {
     }
 }
 
-// We're safe to impl these because the strings they reference are immutable
-// and the allocations can only be deallocated once all these references have
-// been dropped.
+// Safe because of proper atomic operations
 unsafe impl Send for PoolStr {}
 unsafe impl Sync for PoolStr {}
+unsafe impl Send for Pool {}
+unsafe impl Sync for Pool {}
 
 // returns (bytes_to_skip, ready)
 fn get_len(len: &u8) -> (usize, bool) {

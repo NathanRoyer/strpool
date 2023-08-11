@@ -2,10 +2,10 @@ String Pools / Strings Interning
 
 ### Features
 
-- owned string pools (also reference-counted)
-- no_std (but `alloc` is required)
-- quick `Deref<str>` implementation (one pointer resolution, one comparison, and one pointer increment)
-- thin [`PoolStr`] type
+- quick `Deref<str>` implementation - one pointer resolution, one comparison, and one pointer increment
+- thin [`PoolStr`] type - a pointer
+- The pool is deallocated only when every object referencing it have been dropped.
+- no_std, but `alloc` is required
 
 ### Example: Initiating a fetch from github
 
