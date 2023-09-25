@@ -304,6 +304,20 @@ impl Pool {
         }
     }
 
+    /// Get a handle to a special static string pool which is never dropped, like its content.
+    pub fn get_static_pool() -> Self {
+        // this must never be dropped
+        static STATIC_POOL: PoolInner = PoolInner::new();
+
+        STATIC_POOL.inc_ref_count();
+        // now the ref count is at least 2
+        // should prevent it from being dropped
+
+        Self {
+            inner: &STATIC_POOL as _,
+        }
+    }
+
     fn inner(&self) -> &PoolInner {
         unsafe { self.inner.as_ref() }.unwrap()
     }
