@@ -35,6 +35,7 @@ pub struct Pool {
     inner: *const PoolInner,
 }
 
+#[derive(Debug)]
 struct PageHeader {
     next: AtomicPtr<Page>,
     pool: *const PoolInner,
@@ -85,8 +86,9 @@ impl PoolInner {
 
         while let Some(page) = unsafe { ptr.as_ref() } {
             let mut i = 0;
-            loop {
+            while i < PAGE_CAPACITY {
                 let (len, ready) = get_len(&page.entries[i]);
+                // skip len byte:
                 i += 1;
 
                 if ready {
@@ -101,6 +103,7 @@ impl PoolInner {
                     }
                 }
 
+                // skip string bytes:
                 i += len;
             }
 
@@ -141,14 +144,16 @@ impl PoolInner {
         loop {
             while let Some(page) = unsafe { ptr.load(Relaxed).as_mut() } {
                 let mut i = 0;
-                loop {
+                while i < PAGE_CAPACITY {
                     let (len, ready) = get_len(&page.entries[i]);
                     let s = i + 1;
 
                     if ready {
                         if len == slice.len() {
+                            // same length... does this entry correspond to an equal string?
                             let e = s + len;
                             if &page.entries[s..e] == slice {
+                                // yes; we'll re-use it then
                                 self.inc_ref_count();
                                 return PoolStr::new(&page.entries[i]);
                             }
@@ -497,6 +502,33 @@ fn try_set_len(len: &u8, prev: u8, new: u8) -> bool {
     };
 
     len.compare_exchange(prev, new, SeqCst, Relaxed).is_ok()
+}
+
+#[test]
+fn edge_case_1() {
+    let small_string_1 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001 000000000000000000000000";
+    let small_string_2 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002 000000000000000000000000";
+    let small_string_3 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003 000000000000000000000000";
+    let small_string_4 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004 000000000000000000000000";
+    let small_string_5 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005 000000000000000000000000";
+    let small_string_6 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006 000000000000000000000000";
+    let small_string_7 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007 000000000000000000000000";
+    let small_string_8 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008 000000000000000000000000";
+    // now we have 8*(1+125) bytes taken = one page;
+    let small_string_9 = "yikes";
+
+    let pool = Pool::new();
+    pool.intern(small_string_1);
+    pool.intern(small_string_2);
+    pool.intern(small_string_3);
+    pool.intern(small_string_4);
+    pool.intern(small_string_5);
+    pool.intern(small_string_6);
+    pool.intern(small_string_7);
+    pool.intern(small_string_8);
+
+    // would previously fail
+    pool.intern(small_string_9);
 }
 
 #[test]
