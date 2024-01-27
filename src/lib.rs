@@ -1,6 +1,9 @@
 #![doc = include_str!("../README.md")]
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 extern crate alloc;
 
 use core::sync::atomic::{Ordering::*, AtomicPtr, AtomicUsize};
@@ -128,21 +131,26 @@ impl PoolStr {
     }
 }
 
+// this function assumes that len_u8_ref points
+// to a finished/ready slot, for small strings
+fn string_from_len_u8(len_u8_ref: &u8) -> &str {
+    let len = match *len_u8_ref {
+        0 => large::read_actual_string_len(len_u8_ref),
+        l => l as usize,
+    };
+
+    let len_u8_ptr = len_u8_ref as *const u8;
+    let start = unsafe { len_u8_ptr.add(1) };
+    let slice = unsafe { from_raw_parts(start, len) };
+    from_utf8(slice).unwrap()
+}
+
 impl Deref for PoolStr {
     type Target = str;
     fn deref(&self) -> &Self::Target {
-        let len = unsafe { self.len_ptr.as_ref() };
-        if let Some(len_u8) = len {
-            let len = match *len_u8 {
-                0 => large::read_actual_string_len(len_u8),
-                l => l as usize,
-            };
-
-            let start = unsafe { self.len_ptr.add(1) };
-            let slice = unsafe { from_raw_parts(start, len) };
-            from_utf8(slice).unwrap()
-        } else {
-            ""
+        match unsafe { self.len_ptr.as_ref() } {
+            Some(len_u8_ptr) => string_from_len_u8(len_u8_ptr),
+            None => "",
         }
     }
 }
@@ -204,16 +212,47 @@ unsafe impl Sync for PoolStr {}
 unsafe impl Send for Pool {}
 unsafe impl Sync for Pool {}
 
+struct PoolPages<'a>(&'a PoolInner);
+
+impl<'a> core::fmt::Debug for PoolPages<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut output = f.debug_list();
+        self.0.debug_pages(&mut output);
+        output.finish()
+    }
+}
+
+struct PoolLargeStrings<'a>(&'a PoolInner);
+
+impl<'a> core::fmt::Debug for PoolLargeStrings<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut output = f.debug_list();
+        self.0.debug_large_strings(&mut output);
+        output.finish()
+    }
+}
+
+impl core::fmt::Debug for Pool {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let inner = self.inner();
+        let mut output = f.debug_struct("Pool");
+        output.field("reference_count", &inner.ref_count);
+        output.field("small_string_pages", &PoolPages(inner));
+        output.field("largs_strings", &PoolLargeStrings(inner));
+        output.finish()
+    }
+}
+
 #[test]
 fn edge_case_1() {
-    let small_string_1 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001 000000000000000000000000";
-    let small_string_2 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002 000000000000000000000000";
-    let small_string_3 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003 000000000000000000000000";
-    let small_string_4 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004 000000000000000000000000";
-    let small_string_5 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005 000000000000000000000000";
-    let small_string_6 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006 000000000000000000000000";
-    let small_string_7 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007 000000000000000000000000";
-    let small_string_8 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008 000000000000000000000000";
+    let small_string_1 = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001";
+    let small_string_2 = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002";
+    let small_string_3 = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003";
+    let small_string_4 = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004";
+    let small_string_5 = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005";
+    let small_string_6 = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006";
+    let small_string_7 = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007";
+    let small_string_8 = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008";
     // now we have 8*(1+125) bytes taken = one page;
     let small_string_9 = "yikes";
 
@@ -229,6 +268,8 @@ fn edge_case_1() {
 
     // would previously fail
     pool.intern(small_string_9);
+
+    std::println!("{:#?}", pool);
 }
 
 #[test]
@@ -241,6 +282,7 @@ fn various_tests() {
     let large_string_3 = "rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€";
 
     let pool = Pool::new();
+    std::println!("{:#?}", pool);
 
     // check that they're not present initially
     assert_eq!(pool.find(""), Some(PoolStr::empty()));
@@ -279,4 +321,6 @@ fn various_tests() {
     assert_eq!(&*pool.find(small_string_2).unwrap(), small_string_2);
     assert_eq!(&*pool.find(large_string_3).unwrap(), large_string_3);
     assert_eq!(&*pool.find(small_string_3).unwrap(), small_string_3);
+
+    std::println!("{:#?}", pool);
 }

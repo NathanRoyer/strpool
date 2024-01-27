@@ -2,7 +2,7 @@ use core::sync::atomic::{Ordering::*, AtomicPtr};
 use core::{mem::{size_of, align_of}, ptr::copy};
 use alloc::alloc::{Layout, alloc, dealloc};
 
-use super::{PoolInner, PoolStr, hash::hash_str};
+use super::{PoolInner, PoolStr, hash::hash_str, string_from_len_u8};
 
 const LARGE_STR_ADVANCE: usize = {
       size_of::<usize>()
@@ -96,6 +96,16 @@ impl PoolInner {
             // if it failed, the search restarts at the
             // large_string that was appended by another
             // thread.
+        }
+    }
+
+    pub(crate) fn debug_large_strings(&self, output: &mut core::fmt::DebugList) {
+        let mut ptr = self.first_large_string.load(Relaxed);
+
+        while let Some(large_string) = unsafe { ptr.as_ref() } {
+            let string = string_from_len_u8(&large_string.len_zero);
+            output.entry(&string);
+            ptr = large_string.next.load(Relaxed);
         }
     }
 }

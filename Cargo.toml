@@ -1,7 +1,7 @@
 [package]
 name = "strpool"
 description = "String Pools / Strings Interning"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2021"
 authors = [ "Nathan ROYER <nathan.royer.pro@gmail.com>" ]
 license = "MIT"
@@ -12,9 +12,9 @@ repository = "https://github.com/NathanRoyer/strpool"
 [lib]
 
 [dependencies]
-ahash = { version = "0.8.3", default-features = false }
+ahash = { version = "0.8", default-features = false }
 
 [build-dependencies]
-rand = "0.8.5"
+rand = "0.8"
 
 [features]

@@ -2,7 +2,7 @@ use core::sync::atomic::{Ordering::*, AtomicPtr, AtomicU8};
 use alloc::alloc::{Layout, alloc, dealloc};
 use core::mem::size_of;
 
-use super::{PoolInner, PoolStr};
+use super::{PoolInner, PoolStr, string_from_len_u8};
 
 const PAGE_SIZE: usize = 1024;
 const PAGE_ALIGN_MASK: usize = !(PAGE_SIZE - 1);
@@ -99,6 +99,27 @@ impl Page {
 
         None
     }
+
+    // used by Debug for Page
+    fn debug_slot(&self, len_index: usize) -> Option<(Option<&str>, usize)> {
+        if len_index < PAGE_CAPACITY {
+            let len_u8_ref = &self.entries[len_index];
+            let (len, ready) = read_atomic_slot_len(len_u8_ref);
+
+            if len != 0 {
+                let string = match ready {
+                    true => Some(string_from_len_u8(len_u8_ref)),
+                    false => None,
+                };
+
+                Some((string, len_index + 1 + len))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 }
 
 impl PoolInner {
@@ -166,6 +187,15 @@ impl PoolInner {
             page_ptr_ref = last_searched_page_next_ptr_ref;
         }
     }
+
+    pub(crate) fn debug_pages(&self, output: &mut core::fmt::DebugList) {
+        let mut ptr = self.first_page.load(Relaxed);
+
+        while let Some(page) = unsafe { ptr.as_ref() } {
+            output.entry(&page);
+            ptr = page.header.next.load(Relaxed);
+        }
+    }
 }
 
 // returns (bytes_to_skip, ready)
@@ -208,5 +238,23 @@ pub(crate) fn deep_drop(mut ptr: *const Page) {
         let mut_ptr = (ptr as usize) as *mut u8;
         ptr = page.header.next.load(Relaxed);
         unsafe { dealloc(mut_ptr, PAGE_LAYOUT) };
+    }
+}
+
+impl core::fmt::Debug for Page {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut output = f.debug_list();
+        let mut i = 0;
+
+        while let Some((string, next)) = self.debug_slot(i) {
+            match string {
+                Some(string) => output.entry(&string),
+                none => output.entry(&none),
+            };
+
+            i = next;
+        }
+
+        output.finish()
     }
 }

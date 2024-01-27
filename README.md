@@ -6,8 +6,11 @@ String Pools / Strings Interning
 - thin [`PoolStr`] type - a pointer
 - The pool is deallocated only when every object referencing it have been dropped.
 - no_std, but `alloc` is required
+- thread-safe
+- [`Pool`]'s `Debug` implementation allows you to see all of its strings
+- simple O(n) insertion/search
 
-### Example: Initiating a fetch from github
+### Example
 
 ```rust
 # use {strpool::{Pool, PoolStr}, core::ops::Deref};
@@ -27,6 +30,9 @@ assert_eq!(pool.find("oh hi mark"), None);
 
 // the empty string doesn't rely on a pool, it's always there
 assert_eq!(pool.find(""), Some(PoolStr::empty()));
+
+// See all interned strings via the Debug implementation
+println!("{:#?}", pool);
 ```
 
 ### Internal Memory Structure (Example)
