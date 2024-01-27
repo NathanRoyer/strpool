@@ -8,14 +8,21 @@ String Pools / Strings Interning
 - no_std, but `alloc` is required
 - thread-safe
 - [`Pool`]'s `Debug` implementation allows you to see all of its strings
-- simple O(n) insertion/search
+- simple O(n / `P`) insertion/search, where `P` is `Pool`'s const generic parameter
 
 ### Example
 
 ```rust
 # use {strpool::{Pool, PoolStr}, core::ops::Deref};
+
+// you can reduce insertion/search complexity by raising this number,
+// at the expense of more frequent allocations for small strings.
+// strings are spread evenly into these subpools based on their hash.
+// => must be a non-zero power of two.
+const SUB_POOLS: usize = 1;
+
 // no need for mutability, the pool uses atomic operations
-let pool = Pool::new();
+let pool: Pool<SUB_POOLS> = Pool::new();
 
 // use Pool::intern(&self, &str) to insert a string slice into the pool
 // if the string was already present, that PoolStr will be reused.

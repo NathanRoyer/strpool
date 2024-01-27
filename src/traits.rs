@@ -1,13 +1,13 @@
 use super::PoolStr;
 use core::ops::Deref;
 
-impl core::fmt::Debug for PoolStr {
+impl<const P: usize> core::fmt::Debug for PoolStr<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.deref().fmt(f)
     }
 }
 
-impl core::fmt::Display for PoolStr {
+impl<const P: usize> core::fmt::Display for PoolStr<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.deref().fmt(f)
     }
@@ -19,46 +19,46 @@ impl core::fmt::Display for PoolStr {
 // for this reason, we have to fall back to
 // a traditional comparison if the pointers
 // aren't the same.
-impl PartialEq for PoolStr {
+impl<const P: usize> PartialEq for PoolStr<P> {
     fn eq(&self, other: &Self) -> bool {
            self.len_ptr == other.len_ptr
         || self.deref() == other.deref()
     }
 }
 
-impl Eq for PoolStr {}
+impl<const P: usize> Eq for PoolStr <P>{}
 
-impl PartialEq<str> for PoolStr {
+impl<const P: usize> PartialEq<str> for PoolStr<P> {
     fn eq(&self, other: &str) -> bool {
         self.deref() == other
     }
 }
 
-impl PartialEq<PoolStr> for str {
-    fn eq(&self, other: &PoolStr) -> bool {
+impl<const P: usize> PartialEq<PoolStr<P>> for str {
+    fn eq(&self, other: &PoolStr<P>) -> bool {
         self == other.deref()
     }
 }
 
-impl AsRef<str> for PoolStr {
+impl<const P: usize> AsRef<str> for PoolStr<P> {
     fn as_ref(&self) -> &str {
         self.deref()
     }
 }
 
-impl Default for PoolStr {
+impl<const P: usize> Default for PoolStr<P> {
     fn default() -> Self {
         Self::empty()
     }
 }
 
-impl core::hash::Hash for PoolStr {
+impl<const P: usize> core::hash::Hash for PoolStr<P> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.deref().hash(state);
     }
 }
 
-impl<I> core::ops::Index<I> for PoolStr
+impl<const P: usize, I> core::ops::Index<I> for PoolStr<P>
 where I: core::slice::SliceIndex<str>,
 {
     type Output = I::Output;
@@ -69,21 +69,21 @@ where I: core::slice::SliceIndex<str>,
     }
 }
 
-impl PartialOrd<str> for PoolStr {
+impl<const P: usize> PartialOrd<str> for PoolStr<P> {
     #[inline]
     fn partial_cmp(&self, other: &str) -> Option<core::cmp::Ordering> {
         self.deref().partial_cmp(other)
     }
 }
 
-impl PartialOrd<PoolStr> for PoolStr {
+impl<const P: usize> PartialOrd<PoolStr<P>> for PoolStr<P> {
     #[inline]
-    fn partial_cmp(&self, other: &PoolStr) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &PoolStr<P>) -> Option<core::cmp::Ordering> {
         self.deref().partial_cmp(other.deref())
     }
 }
 
-impl Ord for PoolStr {
+impl<const P: usize> Ord for PoolStr<P> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.deref().cmp(other.deref())
     }

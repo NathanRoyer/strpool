@@ -7,24 +7,25 @@ use super::{PoolInner, PoolStr, hash::hash_str, string_from_len_u8};
 const LARGE_STR_ADVANCE: usize = {
       size_of::<usize>()
     + size_of::<u64>()
-    + size_of::<*const PoolInner>()
-    + size_of::<AtomicPtr<LargeStringHeader>>()
+    + size_of::<*const PoolInner<0>>() // P doesn't influence a pointer's size
+    + size_of::<AtomicPtr<LargeStringHeader<0>>>()
 };
 
 #[repr(C)]
 #[derive(Debug)]
-pub(crate) struct LargeStringHeader {
+pub(crate) struct LargeStringHeader<const P: usize> {
     len: usize,
     hash: u64,
-    pool: *const PoolInner,
-    next: AtomicPtr<LargeStringHeader>,
+    pool: *const PoolInner<P>,
+    next: AtomicPtr<LargeStringHeader<P>>,
     len_zero: u8,
 }
 
-impl PoolInner {
-    pub(crate) fn find_large(&self, string: &str) -> Option<PoolStr> {
+impl<const P: usize> PoolInner<P> {
+    pub(crate) fn find_large(&self, string: &str) -> Option<PoolStr<P>> {
         let hash = hash_str(string);
-        let mut ptr = self.first_large_string.load(Relaxed);
+        let pool_index = Self::index_from_hash(hash);
+        let mut ptr = self.first_large_string[pool_index].load(Relaxed);
 
         while let Some(large_string) = unsafe { ptr.as_ref() } {
             if large_string.hash == hash {
@@ -38,9 +39,10 @@ impl PoolInner {
         None
     }
 
-    pub(crate) fn intern_large(&self, string: &str) -> PoolStr {
+    pub(crate) fn intern_large(&self, string: &str) -> PoolStr<P> {
         let hash = hash_str(string);
-        let mut ptr = &self.first_large_string;
+        let pool_index = Self::index_from_hash(hash);
+        let mut ptr = &self.first_large_string[pool_index];
         let mut allocation = None;
 
         loop {
@@ -60,10 +62,10 @@ impl PoolInner {
                 large_string
             } else {
                 let len = string.len();
-                let layout = large_string_layout(len);
+                let layout = large_string_layout::<P>(len);
 
                 let large_string = unsafe {
-                    let ptr = alloc(layout) as *mut LargeStringHeader;
+                    let ptr = alloc(layout) as *mut LargeStringHeader<P>;
 
                     let mut_ref = ptr.as_mut().unwrap();
                     *mut_ref = LargeStringHeader {
@@ -100,44 +102,46 @@ impl PoolInner {
     }
 
     pub(crate) fn debug_large_strings(&self, output: &mut core::fmt::DebugList) {
-        let mut ptr = self.first_large_string.load(Relaxed);
+        for pool_index in 0..P {
+            let mut ptr = self.first_large_string[pool_index].load(Relaxed);
 
-        while let Some(large_string) = unsafe { ptr.as_ref() } {
-            let string = string_from_len_u8(&large_string.len_zero);
-            output.entry(&string);
-            ptr = large_string.next.load(Relaxed);
+            while let Some(large_string) = unsafe { ptr.as_ref() } {
+                let string = string_from_len_u8::<P>(&large_string.len_zero);
+                output.entry(&string);
+                ptr = large_string.next.load(Relaxed);
+            }
         }
     }
 }
 
-fn large_string_layout(len: usize) -> Layout {
+fn large_string_layout<const P: usize>(len: usize) -> Layout {
     // this currently wastes 3-7 bytes (todo)
-    let size = size_of::<LargeStringHeader>() + len;
+    let size = size_of::<LargeStringHeader<P>>() + len;
     Layout::from_size_align(size, align_of::<usize>()).unwrap()
 }
 
-fn get_large_string(len_u8_ptr: &u8) -> &LargeStringHeader {
+fn get_large_string<const P: usize>(len_u8_ptr: &u8) -> &LargeStringHeader<P> {
     unsafe {
         (len_u8_ptr as *const u8)
             .sub(LARGE_STR_ADVANCE)
-            .cast::<LargeStringHeader>()
+            .cast::<LargeStringHeader<P>>()
             .as_ref()
             .unwrap()
     }
 }
 
-pub(crate) fn string_pool_ptr(len_u8_ptr: &u8) -> *const PoolInner {
+pub(crate) fn string_pool_ptr<const P: usize>(len_u8_ptr: &u8) -> *const PoolInner<P> {
     get_large_string(len_u8_ptr).pool
 }
 
-pub(crate) fn read_actual_string_len(len_u8_ptr: &u8) -> usize {
-    get_large_string(len_u8_ptr).len
+pub(crate) fn read_actual_string_len<const P: usize>(len_u8_ptr: &u8) -> usize {
+    get_large_string::<P>(len_u8_ptr).len
 }
 
-pub(crate) fn deep_drop(mut ptr: *const LargeStringHeader) {
+pub(crate) fn deep_drop<const P: usize>(mut ptr: *const LargeStringHeader<P>) {
     while let Some(large_string) = unsafe { ptr.as_ref() } {
         let mut_ptr = (ptr as usize) as *mut u8;
         ptr = large_string.next.load(Relaxed);
-        unsafe { dealloc(mut_ptr, large_string_layout(large_string.len)) };
+        unsafe { dealloc(mut_ptr, large_string_layout::<P>(large_string.len)) };
     }
 }

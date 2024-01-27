@@ -15,29 +15,41 @@ mod small;
 mod large;
 mod traits;
 
-struct PoolInner {
+struct PoolInner<const P: usize> {
     ref_count: AtomicUsize,
-    first_page: AtomicPtr<small::Page>,
-    first_large_string: AtomicPtr<large::LargeStringHeader>,
+    first_page: [AtomicPtr<small::Page<P>>; P],
+    first_large_string: [AtomicPtr<large::LargeStringHeader<P>>; P],
 }
 
 /// String pool
-pub struct Pool {
-    inner: *const PoolInner,
+pub struct Pool<const P: usize = 1> {
+    inner: *const PoolInner<P>,
 }
 
 /// `&str` equivalent
-pub struct PoolStr {
+pub struct PoolStr<const P: usize> {
     len_ptr: *const u8,
+    _phantom: [(); P],
 }
 
-impl PoolInner {
-    /// sets the ref_count to 1
-    const fn new() -> Self {
-        Self {
-            ref_count: AtomicUsize::new(1),
-            first_page: AtomicPtr::new(0 as _),
-            first_large_string: AtomicPtr::new(0 as _),
+impl<const P: usize> PoolInner<P> {
+    const FIRST_PAGE_NEW: AtomicPtr<small::Page<P>> = AtomicPtr::new(0 as _);
+    const FIRST_LS_NEW: AtomicPtr<large::LargeStringHeader<P>> = AtomicPtr::new(0 as _);
+    const NEW: Self = Self {
+        ref_count: AtomicUsize::new(1),
+        first_page: [Self::FIRST_PAGE_NEW; P],
+        first_large_string: [Self::FIRST_LS_NEW; P],
+    };
+
+    fn index_from_hash(hash: u64) -> usize {
+        assert!(P.is_power_of_two());
+        (hash as usize) & (P - 1)
+    }
+
+    fn index_for(string: &str) -> usize {
+        match P {
+            0 => 0,
+            _ => Self::index_from_hash(hash::hash_str(string)),
         }
     }
 
@@ -50,7 +62,7 @@ impl PoolInner {
         self.ref_count.fetch_sub(1, SeqCst) == 1
     }
 
-    fn find(&self, string: &str) -> Option<PoolStr> {
+    fn find(&self, string: &str) -> Option<PoolStr<P>> {
         match string.len() {
             0 => Some(PoolStr::empty()),
             1..=126 => self.find_small(string),
@@ -58,7 +70,7 @@ impl PoolInner {
         }
     }
 
-    fn intern(&self, string: &str) -> PoolStr {
+    fn intern(&self, string: &str) -> PoolStr<P> {
         match string.len() {
             0 => PoolStr::empty(),
             1..=126 => self.intern_small(string),
@@ -67,59 +79,55 @@ impl PoolInner {
     }
 }
 
-impl Pool {
+impl<const P: usize> Pool<P> {
     /// Creates a new pool
     pub fn new() -> Self {
-        let boxed = Box::new(PoolInner::new());
-        // ref_count is set to one
+        assert!(P.is_power_of_two());
+
+        // ref_count is set to one in each inner pool
+        let boxed = Box::new(PoolInner::NEW);
         Self {
             inner: Box::into_raw(boxed),
         }
     }
 
-    /// Get a handle to a special static string pool which is never dropped, like its content.
+    /// Deprecated; same as `Self::new()`
+    #[deprecated]
     pub fn get_static_pool() -> Self {
-        // this must never be dropped
-        static STATIC_POOL: PoolInner = PoolInner::new();
-
-        STATIC_POOL.inc_ref_count();
-        // now the ref count is at least 2
-        // should prevent it from being dropped
-
-        Self {
-            inner: &STATIC_POOL as _,
-        }
+        Self::new()
     }
 
-    fn inner(&self) -> &PoolInner {
+    fn inner(&self) -> &PoolInner<P> {
         unsafe { self.inner.as_ref() }.unwrap()
     }
 
     /// Locates an existing [`PoolStr`]
-    pub fn find(&self, string: &str) -> Option<PoolStr> {
+    pub fn find(&self, string: &str) -> Option<PoolStr<P>> {
         self.inner().find(string)
     }
 
     /// Creates a new [`PoolStr`]
-    pub fn intern(&self, string: &str) -> PoolStr {
+    pub fn intern(&self, string: &str) -> PoolStr<P> {
         self.inner().intern(string)
     }
 }
 
-impl PoolStr {
+impl<const P: usize> PoolStr<P> {
     fn new(len: &u8) -> Self {
         Self {
             len_ptr: len as *const u8,
+            _phantom: [(); P],
         }
     }
 
     pub fn empty() -> Self {
         Self {
             len_ptr: 0 as *const u8,
+            _phantom: [(); P],
         }
     }
 
-    fn pool_ptr(&self) -> Option<*const PoolInner> {
+    fn pool_ptr(&self) -> Option<*const PoolInner<P>> {
         let len = unsafe { self.len_ptr.as_ref()? };
 
         let pool_ptr = match *len {
@@ -133,9 +141,9 @@ impl PoolStr {
 
 // this function assumes that len_u8_ref points
 // to a finished/ready slot, for small strings
-fn string_from_len_u8(len_u8_ref: &u8) -> &str {
+fn string_from_len_u8<const P: usize>(len_u8_ref: &u8) -> &str {
     let len = match *len_u8_ref {
-        0 => large::read_actual_string_len(len_u8_ref),
+        0 => large::read_actual_string_len::<P>(len_u8_ref),
         l => l as usize,
     };
 
@@ -145,27 +153,29 @@ fn string_from_len_u8(len_u8_ref: &u8) -> &str {
     from_utf8(slice).unwrap()
 }
 
-impl Deref for PoolStr {
+impl<const P: usize> Deref for PoolStr<P> {
     type Target = str;
     fn deref(&self) -> &Self::Target {
         match unsafe { self.len_ptr.as_ref() } {
-            Some(len_u8_ptr) => string_from_len_u8(len_u8_ptr),
+            Some(len_u8_ptr) => string_from_len_u8::<P>(len_u8_ptr),
             None => "",
         }
     }
 }
 
-fn deep_drop_pool(pool_ptr: *const PoolInner) {
+fn deep_drop_pool<const P: usize>(pool_ptr: *const PoolInner<P>) {
     let pool = unsafe { pool_ptr.as_ref() }.unwrap();
 
-    large::deep_drop(pool.first_large_string.load(Relaxed));
-    small::deep_drop(pool.first_page.load(Relaxed));
+    for pool_index in 0..P {
+        large::deep_drop(pool.first_large_string[pool_index].load(Relaxed));
+        small::deep_drop(pool.first_page[pool_index].load(Relaxed));
+    }
 
-    let mut_ptr = (pool_ptr as usize) as *mut PoolInner;
+    let mut_ptr = (pool_ptr as usize) as *mut PoolInner<P>;
     drop(unsafe { Box::from_raw(mut_ptr) });
 }
 
-impl Drop for PoolStr {
+impl<const P: usize> Drop for PoolStr<P> {
     fn drop(&mut self) {
         if let Some(pool_ptr) = self.pool_ptr() {
             let pool = unsafe { pool_ptr.as_ref() }.unwrap();
@@ -176,7 +186,7 @@ impl Drop for PoolStr {
     }
 }
 
-impl Drop for Pool {
+impl<const P: usize> Drop for Pool<P> {
     fn drop(&mut self) {
         let pool = unsafe { self.inner.as_ref() }.unwrap();
         if pool.dec_ref_count() {
@@ -185,7 +195,7 @@ impl Drop for Pool {
     }
 }
 
-impl Clone for PoolStr {
+impl<const P: usize> Clone for PoolStr<P> {
     fn clone(&self) -> Self {
         if let Some(pool_ptr) = self.pool_ptr() {
             unsafe { pool_ptr.as_ref() }.unwrap().inc_ref_count();
@@ -193,11 +203,12 @@ impl Clone for PoolStr {
 
         Self {
             len_ptr: self.len_ptr,
+            _phantom: [(); P],
         }
     }
 }
 
-impl Clone for Pool {
+impl<const P: usize> Clone for Pool<P> {
     fn clone(&self) -> Self {
         self.inner().inc_ref_count();
         Self {
@@ -207,14 +218,14 @@ impl Clone for Pool {
 }
 
 // Safe because of proper atomic operations
-unsafe impl Send for PoolStr {}
-unsafe impl Sync for PoolStr {}
-unsafe impl Send for Pool {}
-unsafe impl Sync for Pool {}
+unsafe impl<const P: usize> Send for PoolStr<P> {}
+unsafe impl<const P: usize> Sync for PoolStr<P> {}
+unsafe impl<const P: usize> Send for Pool<P> {}
+unsafe impl<const P: usize> Sync for Pool<P> {}
 
-struct PoolPages<'a>(&'a PoolInner);
+struct PoolPages<'a, const P: usize>(&'a PoolInner<P>);
 
-impl<'a> core::fmt::Debug for PoolPages<'a> {
+impl<'a, const P: usize> core::fmt::Debug for PoolPages<'a, P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut output = f.debug_list();
         self.0.debug_pages(&mut output);
@@ -222,9 +233,9 @@ impl<'a> core::fmt::Debug for PoolPages<'a> {
     }
 }
 
-struct PoolLargeStrings<'a>(&'a PoolInner);
+struct PoolLargeStrings<'a, const P: usize>(&'a PoolInner<P>);
 
-impl<'a> core::fmt::Debug for PoolLargeStrings<'a> {
+impl<'a, const P: usize> core::fmt::Debug for PoolLargeStrings<'a, P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut output = f.debug_list();
         self.0.debug_large_strings(&mut output);
@@ -232,7 +243,7 @@ impl<'a> core::fmt::Debug for PoolLargeStrings<'a> {
     }
 }
 
-impl core::fmt::Debug for Pool {
+impl<const P: usize> core::fmt::Debug for Pool<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let inner = self.inner();
         let mut output = f.debug_struct("Pool");
@@ -256,7 +267,7 @@ fn edge_case_1() {
     // now we have 8*(1+125) bytes taken = one page;
     let small_string_9 = "yikes";
 
-    let pool = Pool::new();
+    let pool: Pool<1> = Pool::new();
     pool.intern(small_string_1);
     pool.intern(small_string_2);
     pool.intern(small_string_3);
@@ -281,7 +292,7 @@ fn various_tests() {
     let large_string_2 = "rgyeurgyeyrgrgyeurgyeyrgrgyeurgyeyrgrgyeurgyeyrgrgyeurgyeyrgrgyeurgyeyrgrgyeurgyeyrgrgyeurgyeyrgrgyeurgyeyrgrgyeurgyeyrgrgyeurgyeyrgrgyeurgyeyrg";
     let large_string_3 = "rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€";
 
-    let pool = Pool::new();
+    let pool: Pool<4> = Pool::new();
     std::println!("{:#?}", pool);
 
     // check that they're not present initially

@@ -6,24 +6,24 @@ use super::{PoolInner, PoolStr, string_from_len_u8};
 
 const PAGE_SIZE: usize = 1024;
 const PAGE_ALIGN_MASK: usize = !(PAGE_SIZE - 1);
-const PAGE_CAPACITY: usize = PAGE_SIZE - size_of::<PageHeader>();
+const PAGE_CAPACITY: usize = PAGE_SIZE - size_of::<PageHeader<0>>(); // P doesn't influence PageHeader's size
 const PAGE_LAYOUT: Layout = unsafe { Layout::from_size_align_unchecked(PAGE_SIZE, PAGE_SIZE) };
 const NOT_READY: u8 = 0x80;
 const LEN_MASK: u8 = 0x7f;
 
 #[derive(Debug)]
-struct PageHeader {
-    next: AtomicPtr<Page>,
-    pool: *const PoolInner,
+struct PageHeader<const P: usize> {
+    next: AtomicPtr<Page<P>>,
+    pool: *const PoolInner<P>,
 }
 
-pub(crate) struct Page {
-    header: PageHeader,
+pub(crate) struct Page<const P: usize> {
+    header: PageHeader<P>,
     entries: [u8; PAGE_CAPACITY],
 }
 
-impl Page {
-    fn find(&self, slice: &[u8]) -> Option<PoolStr> {
+impl<const P: usize> Page<P> {
+    fn find(&self, slice: &[u8]) -> Option<PoolStr<P>> {
         let mut i = 0;
         while i < PAGE_CAPACITY {
             let (len, ready) = read_atomic_slot_len(&self.entries[i]);
@@ -48,7 +48,7 @@ impl Page {
         None
     }
 
-    fn try_intern(&mut self, slice: &[u8]) -> Option<PoolStr> {
+    fn try_intern(&mut self, slice: &[u8]) -> Option<PoolStr<P>> {
         let mut i = 0;
         while i < PAGE_CAPACITY {
             let (len, ready) = read_atomic_slot_len(&self.entries[i]);
@@ -108,7 +108,7 @@ impl Page {
 
             if len != 0 {
                 let string = match ready {
-                    true => Some(string_from_len_u8(len_u8_ref)),
+                    true => Some(string_from_len_u8::<P>(len_u8_ref)),
                     false => None,
                 };
 
@@ -122,10 +122,11 @@ impl Page {
     }
 }
 
-impl PoolInner {
-    pub(crate) fn find_small(&self, string: &str) -> Option<PoolStr> {
+impl<const P: usize> PoolInner<P> {
+    pub(crate) fn find_small(&self, string: &str) -> Option<PoolStr<P>> {
         let slice = string.as_bytes();
-        let mut ptr = self.first_page.load(Relaxed);
+        let pool_index = Self::index_for(string);
+        let mut ptr = self.first_page[pool_index].load(Relaxed);
 
         while let Some(page) = unsafe { ptr.as_ref() } {
             if let Some(pool_str) = page.find(slice) {
@@ -139,9 +140,10 @@ impl PoolInner {
         None
     }
 
-    pub(crate) fn intern_small(&self, string: &str) -> PoolStr {
+    pub(crate) fn intern_small(&self, string: &str) -> PoolStr<P> {
         let slice = string.as_bytes();
-        let mut page_ptr_ref = &self.first_page;
+        let pool_index = Self::index_for(string);
+        let mut page_ptr_ref = &self.first_page[pool_index];
 
         loop {
             while let Some(page) = unsafe { page_ptr_ref.load(Relaxed).as_mut() } {
@@ -156,7 +158,7 @@ impl PoolInner {
             let last_searched_page_next_ptr_ref = page_ptr_ref;
 
             let new_page_ptr = unsafe {
-                let new_page_ptr = alloc(PAGE_LAYOUT) as *mut Page;
+                let new_page_ptr = alloc(PAGE_LAYOUT) as *mut Page<P>;
 
                 let new_page = new_page_ptr.as_mut().unwrap();
                 new_page.header = PageHeader {
@@ -189,11 +191,13 @@ impl PoolInner {
     }
 
     pub(crate) fn debug_pages(&self, output: &mut core::fmt::DebugList) {
-        let mut ptr = self.first_page.load(Relaxed);
+        for pool_index in 0..P {
+            let mut ptr = self.first_page[pool_index].load(Relaxed);
 
-        while let Some(page) = unsafe { ptr.as_ref() } {
-            output.entry(&page);
-            ptr = page.header.next.load(Relaxed);
+            while let Some(page) = unsafe { ptr.as_ref() } {
+                output.entry(&page);
+                ptr = page.header.next.load(Relaxed);
+            }
         }
     }
 }
@@ -224,16 +228,16 @@ fn try_set_len(len: &u8, prev: u8, new: u8) -> bool {
     len.compare_exchange(prev, new, SeqCst, Relaxed).is_ok()
 }
 
-pub(crate) fn string_pool_ptr(len_u8_ptr: &u8) -> *const PoolInner {
+pub(crate) fn string_pool_ptr<const P: usize>(len_u8_ptr: &u8) -> *const PoolInner<P> {
     let addr_usize = (len_u8_ptr as *const _) as usize;
     let page_ptr_usize = addr_usize & PAGE_ALIGN_MASK;
-    let page_ptr = page_ptr_usize as *const Page;
+    let page_ptr = page_ptr_usize as *const Page<P>;
     let page = unsafe { page_ptr.as_ref() }.unwrap();
 
     page.header.pool
 }
 
-pub(crate) fn deep_drop(mut ptr: *const Page) {
+pub(crate) fn deep_drop<const P: usize>(mut ptr: *const Page<P>) {
     while let Some(page) = unsafe { ptr.as_ref() } {
         let mut_ptr = (ptr as usize) as *mut u8;
         ptr = page.header.next.load(Relaxed);
@@ -241,7 +245,7 @@ pub(crate) fn deep_drop(mut ptr: *const Page) {
     }
 }
 
-impl core::fmt::Debug for Page {
+impl<const P: usize> core::fmt::Debug for Page<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut output = f.debug_list();
         let mut i = 0;
