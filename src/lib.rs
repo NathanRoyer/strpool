@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(test)]
 extern crate std;
@@ -14,6 +14,15 @@ mod hash;
 mod small;
 mod large;
 mod traits;
+
+#[cfg(feature = "std")]
+mod static_pool;
+
+#[cfg(feature = "std")]
+pub use static_pool::PoolCell;
+
+#[cfg(feature = "serde")]
+pub mod serde;
 
 struct PoolInner<const P: usize> {
     ref_count: AtomicUsize,
@@ -280,7 +289,7 @@ fn edge_case_1() {
     // would previously fail
     pool.intern(small_string_9);
 
-    std::println!("{:#?}", pool);
+    std::println!("EDGE CASE: {:#?}", pool);
 }
 
 #[test]
@@ -293,7 +302,7 @@ fn various_tests() {
     let large_string_3 = "rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€rjuebuinh99€€";
 
     let pool: Pool<4> = Pool::new();
-    std::println!("{:#?}", pool);
+    std::println!("BEFORE VARIOUS TESTS: {:#?}", pool);
 
     // check that they're not present initially
     assert_eq!(pool.find(""), Some(PoolStr::empty()));
@@ -333,5 +342,5 @@ fn various_tests() {
     assert_eq!(&*pool.find(large_string_3).unwrap(), large_string_3);
     assert_eq!(&*pool.find(small_string_3).unwrap(), small_string_3);
 
-    std::println!("{:#?}", pool);
+    std::println!("AFTER VARIOUS TESTS: {:#?}", pool);
 }

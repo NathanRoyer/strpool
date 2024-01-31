@@ -6,6 +6,6 @@ fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
 
     let rnd_seed_dst = Path::new(&out_dir).join("seed.dat");
-    let rnd_seed: [u8; 32] = random();
+    let rnd_seed: [u8; 8] = random();
     fs::write(rnd_seed_dst, &rnd_seed).unwrap();
 }
