@@ -1,4 +1,4 @@
-use core::sync::atomic::{Ordering::*, AtomicPtr};
+use core::sync::atomic::{Ordering::*, AtomicPtr, AtomicU8};
 use core::{mem::{size_of, align_of}, ptr::copy};
 use alloc::alloc::{Layout, alloc, dealloc};
 
@@ -18,7 +18,7 @@ pub(crate) struct LargeStringHeader<const P: usize> {
     hash: u64,
     pool: *const PoolInner<P>,
     next: AtomicPtr<LargeStringHeader<P>>,
-    len_zero: u8,
+    len_zero: AtomicU8,
 }
 
 impl<const P: usize> PoolInner<P> {
@@ -73,12 +73,13 @@ impl<const P: usize> PoolInner<P> {
                         hash,
                         pool: self as _,
                         next: AtomicPtr::new(0 as _),
-                        len_zero: 0,
+                        len_zero: AtomicU8::new(0),
                     };
 
                     // copy the string bytes
-                    let dst = (&mut mut_ref.len_zero as *mut u8).add(1);
-                    copy(string.as_ptr(), dst, len);
+                    let dst_ptr = &mut mut_ref.len_zero as *mut AtomicU8;
+                    let dst_ptr = (dst_ptr as *mut u8).add(1);
+                    copy(string.as_ptr(), dst_ptr, len);
 
                     ptr
                 };
@@ -120,9 +121,9 @@ fn large_string_layout<const P: usize>(len: usize) -> Layout {
     Layout::from_size_align(size, align_of::<usize>()).unwrap()
 }
 
-fn get_large_string<const P: usize>(len_u8_ptr: &u8) -> &LargeStringHeader<P> {
+fn get_large_string<const P: usize>(len_u8_ptr: &AtomicU8) -> &LargeStringHeader<P> {
     unsafe {
-        (len_u8_ptr as *const u8)
+        (len_u8_ptr as *const AtomicU8)
             .sub(LARGE_STR_ADVANCE)
             .cast::<LargeStringHeader<P>>()
             .as_ref()
@@ -130,11 +131,11 @@ fn get_large_string<const P: usize>(len_u8_ptr: &u8) -> &LargeStringHeader<P> {
     }
 }
 
-pub(crate) fn string_pool_ptr<const P: usize>(len_u8_ptr: &u8) -> *const PoolInner<P> {
+pub(crate) fn string_pool_ptr<const P: usize>(len_u8_ptr: &AtomicU8) -> *const PoolInner<P> {
     get_large_string(len_u8_ptr).pool
 }
 
-pub(crate) fn read_actual_string_len<const P: usize>(len_u8_ptr: &u8) -> usize {
+pub(crate) fn read_actual_string_len<const P: usize>(len_u8_ptr: &AtomicU8) -> usize {
     get_large_string::<P>(len_u8_ptr).len
 }
 

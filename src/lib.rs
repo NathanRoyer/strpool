@@ -6,7 +6,7 @@ extern crate std;
 
 extern crate alloc;
 
-use core::sync::atomic::{Ordering::*, AtomicPtr, AtomicUsize};
+use core::sync::atomic::{Ordering::*, AtomicPtr, AtomicUsize, AtomicU8};
 use core::{slice::from_raw_parts, str::from_utf8, ops::Deref};
 use alloc::boxed::Box;
 
@@ -37,7 +37,7 @@ pub struct Pool<const P: usize = 1> {
 
 /// `&str` equivalent
 pub struct PoolStr<const P: usize> {
-    len_ptr: *const u8,
+    len_ptr: *const AtomicU8,
     _phantom: [(); P],
 }
 
@@ -122,16 +122,16 @@ impl<const P: usize> Pool<P> {
 }
 
 impl<const P: usize> PoolStr<P> {
-    fn new(len: &u8) -> Self {
+    fn new(len: &AtomicU8) -> Self {
         Self {
-            len_ptr: len as *const u8,
+            len_ptr: len as *const AtomicU8,
             _phantom: [(); P],
         }
     }
 
     pub fn empty() -> Self {
         Self {
-            len_ptr: 0 as *const u8,
+            len_ptr: 0 as *const AtomicU8,
             _phantom: [(); P],
         }
     }
@@ -139,7 +139,7 @@ impl<const P: usize> PoolStr<P> {
     fn pool_ptr(&self) -> Option<*const PoolInner<P>> {
         let len = unsafe { self.len_ptr.as_ref()? };
 
-        let pool_ptr = match *len {
+        let pool_ptr = match len.load(Relaxed) {
             0 => large::string_pool_ptr(len),
             _ => small::string_pool_ptr(len),
         };
@@ -150,13 +150,14 @@ impl<const P: usize> PoolStr<P> {
 
 // this function assumes that len_u8_ref points
 // to a finished/ready slot, for small strings
-fn string_from_len_u8<const P: usize>(len_u8_ref: &u8) -> &str {
-    let len = match *len_u8_ref {
+fn string_from_len_u8<const P: usize>(len_u8_ref: &AtomicU8) -> &str {
+    let len = match len_u8_ref.load(Relaxed) {
         0 => large::read_actual_string_len::<P>(len_u8_ref),
         l => l as usize,
     };
 
-    let len_u8_ptr = len_u8_ref as *const u8;
+    let len_u8_ptr = len_u8_ref as *const AtomicU8;
+    let len_u8_ptr = len_u8_ptr as *const u8;
     let start = unsafe { len_u8_ptr.add(1) };
     let slice = unsafe { from_raw_parts(start, len) };
     from_utf8(slice).unwrap()

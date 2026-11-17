@@ -19,7 +19,7 @@ struct PageHeader<const P: usize> {
 
 pub(crate) struct Page<const P: usize> {
     header: PageHeader<P>,
-    entries: [u8; PAGE_CAPACITY],
+    entries: [AtomicU8; PAGE_CAPACITY],
 }
 
 impl<const P: usize> Page<P> {
@@ -33,7 +33,8 @@ impl<const P: usize> Page<P> {
             if ready {
                 if len == slice.len() {
                     let j = i + len;
-                    if &self.entries[i..j] == slice {
+
+                    if relaxed_eq(&self.entries[i..j], slice) {
                         return Some(PoolStr::new(&self.entries[i - 1]));
                     }
                 } else if len == 0 {
@@ -58,7 +59,7 @@ impl<const P: usize> Page<P> {
                 if len == slice.len() {
                     // same length... does this entry correspond to an equal string?
                     let e = s + len;
-                    if &self.entries[s..e] == slice {
+                    if relaxed_eq(&self.entries[s..e], slice) {
                         // yes; we'll re-use it then
                         return Some(PoolStr::new(&self.entries[i]));
                     }
@@ -77,7 +78,13 @@ impl<const P: usize> Page<P> {
                         if try_set_len(&self.entries[i], 0, len) {
                             // the NOT_READY flag is set, we can copy the bytes
                             let j = s + slice_len;
-                            self.entries[s..j].copy_from_slice(slice);
+
+                            let it_bytes = self.entries[s..j].iter();
+                            let it_slice = slice.iter();
+
+                            for (dst, src) in Iterator::zip(it_bytes, it_slice) {
+                                dst.store(*src, Relaxed);
+                            }
 
                             // remove NOT_READY flag
                             assert!(try_set_len(&self.entries[i], len, len & LEN_MASK));
@@ -165,7 +172,10 @@ impl<const P: usize> PoolInner<P> {
                     next: AtomicPtr::new(0 as _),
                     pool: self as _,
                 };
-                new_page.entries.fill(0);
+
+                for atomic in &new_page.entries {
+                    atomic.store(0, Relaxed);
+                }
 
                 new_page_ptr
             };
@@ -202,14 +212,15 @@ impl<const P: usize> PoolInner<P> {
     }
 }
 
+fn relaxed_eq(a: &[AtomicU8], b: &[u8]) -> bool {
+    let loader = |a| AtomicU8::load(a, Relaxed);
+    let atomics = a.iter().map(loader);
+    atomics.eq(b.iter().copied())
+}
+
 // returns (bytes_to_skip, ready)
-fn read_atomic_slot_len(len: &u8) -> (usize, bool) {
-    let len = unsafe {
-        (len as *const u8)
-            .cast::<AtomicU8>()
-            .as_ref()
-            .unwrap()
-    }.load(Relaxed);
+fn read_atomic_slot_len(len: &AtomicU8) -> (usize, bool) {
+    let len = len.load(Relaxed);
 
     match len & NOT_READY {
         0 => (len as usize, true),
@@ -217,18 +228,11 @@ fn read_atomic_slot_len(len: &u8) -> (usize, bool) {
     }
 }
 
-fn try_set_len(len: &u8, prev: u8, new: u8) -> bool {
-    let len = unsafe {
-        (len as *const u8)
-            .cast::<AtomicU8>()
-            .as_ref()
-            .unwrap()
-    };
-
+fn try_set_len(len: &AtomicU8, prev: u8, new: u8) -> bool {
     len.compare_exchange(prev, new, SeqCst, Relaxed).is_ok()
 }
 
-pub(crate) fn string_pool_ptr<const P: usize>(len_u8_ptr: &u8) -> *const PoolInner<P> {
+pub(crate) fn string_pool_ptr<const P: usize>(len_u8_ptr: &AtomicU8) -> *const PoolInner<P> {
     let addr_usize = (len_u8_ptr as *const _) as usize;
     let page_ptr_usize = addr_usize & PAGE_ALIGN_MASK;
     let page_ptr = page_ptr_usize as *const Page<P>;
