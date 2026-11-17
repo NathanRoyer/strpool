@@ -133,7 +133,7 @@ impl<const P: usize> PoolInner<P> {
     pub(crate) fn find_small(&self, string: &str) -> Option<PoolStr<P>> {
         let slice = string.as_bytes();
         let pool_index = Self::index_for(string);
-        let mut ptr = self.first_page[pool_index].load(Relaxed);
+        let mut ptr = self.first_page[pool_index].load(SeqCst);
 
         while let Some(page) = unsafe { ptr.as_ref() } {
             if let Some(pool_str) = page.find(slice) {
@@ -153,7 +153,7 @@ impl<const P: usize> PoolInner<P> {
         let mut page_ptr_ref = &self.first_page[pool_index];
 
         loop {
-            while let Some(page) = unsafe { page_ptr_ref.load(Relaxed).as_mut() } {
+            while let Some(page) = unsafe { page_ptr_ref.load(SeqCst).as_mut() } {
                 if let Some(pool_str) = page.try_intern(slice) {
                     self.inc_ref_count();
                     return pool_str;
@@ -183,7 +183,7 @@ impl<const P: usize> PoolInner<P> {
             // need to append a page
             loop {
                 // (re)try to append it
-                match page_ptr_ref.compare_exchange(0 as _, new_page_ptr, SeqCst, Relaxed) {
+                match page_ptr_ref.compare_exchange(0 as _, new_page_ptr, SeqCst, SeqCst) {
                     Ok(_) => break,
                     Err(new_page_ptr) => {
                         // another thread appended a new page before we could do it
@@ -202,11 +202,11 @@ impl<const P: usize> PoolInner<P> {
 
     pub(crate) fn debug_pages(&self, output: &mut core::fmt::DebugList) {
         for pool_index in 0..P {
-            let mut ptr = self.first_page[pool_index].load(Relaxed);
+            let mut ptr = self.first_page[pool_index].load(SeqCst);
 
             while let Some(page) = unsafe { ptr.as_ref() } {
                 output.entry(&page);
-                ptr = page.header.next.load(Relaxed);
+                ptr = page.header.next.load(SeqCst);
             }
         }
     }
@@ -220,7 +220,7 @@ fn relaxed_eq(a: &[AtomicU8], b: &[u8]) -> bool {
 
 // returns (bytes_to_skip, ready)
 fn read_atomic_slot_len(len: &AtomicU8) -> (usize, bool) {
-    let len = len.load(Relaxed);
+    let len = len.load(SeqCst);
 
     match len & NOT_READY {
         0 => (len as usize, true),
@@ -229,7 +229,7 @@ fn read_atomic_slot_len(len: &AtomicU8) -> (usize, bool) {
 }
 
 fn try_set_len(len: &AtomicU8, prev: u8, new: u8) -> bool {
-    len.compare_exchange(prev, new, SeqCst, Relaxed).is_ok()
+    len.compare_exchange(prev, new, SeqCst, SeqCst).is_ok()
 }
 
 pub(crate) fn string_pool_ptr<const P: usize>(len_u8_ptr: &AtomicU8) -> *const PoolInner<P> {
@@ -244,7 +244,7 @@ pub(crate) fn string_pool_ptr<const P: usize>(len_u8_ptr: &AtomicU8) -> *const P
 pub(crate) fn deep_drop<const P: usize>(mut ptr: *const Page<P>) {
     while let Some(page) = unsafe { ptr.as_ref() } {
         let mut_ptr = (ptr as usize) as *mut u8;
-        ptr = page.header.next.load(Relaxed);
+        ptr = page.header.next.load(SeqCst);
         unsafe { dealloc(mut_ptr, PAGE_LAYOUT) };
     }
 }

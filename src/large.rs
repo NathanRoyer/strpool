@@ -25,7 +25,7 @@ impl<const P: usize> PoolInner<P> {
     pub(crate) fn find_large(&self, string: &str) -> Option<PoolStr<P>> {
         let hash = hash_str(string);
         let pool_index = Self::index_from_hash(hash);
-        let mut ptr = self.first_large_string[pool_index].load(Relaxed);
+        let mut ptr = self.first_large_string[pool_index].load(SeqCst);
 
         while let Some(large_string) = unsafe { ptr.as_ref() } {
             if large_string.hash == hash {
@@ -33,7 +33,7 @@ impl<const P: usize> PoolInner<P> {
                 return Some(PoolStr::new(&large_string.len_zero));
             }
 
-            ptr = large_string.next.load(Relaxed);
+            ptr = large_string.next.load(SeqCst);
         }
 
         None
@@ -46,7 +46,7 @@ impl<const P: usize> PoolInner<P> {
         let mut allocation = None;
 
         loop {
-            while let Some(large_string) = unsafe { ptr.load(Relaxed).as_ref() } {
+            while let Some(large_string) = unsafe { ptr.load(SeqCst).as_ref() } {
                 if large_string.hash == hash {
                     if let Some((new, layout)) = allocation {
                         unsafe { dealloc(new as _, layout) };
@@ -90,7 +90,7 @@ impl<const P: usize> PoolInner<P> {
             };
 
             // need to append an entry
-            if ptr.compare_exchange(0 as _, large_string, SeqCst, Relaxed).is_ok() {
+            if ptr.compare_exchange(0 as _, large_string, SeqCst, SeqCst).is_ok() {
                 let ls_ref = unsafe { large_string.as_ref() }.unwrap();
                 self.inc_ref_count();
                 break PoolStr::new(&ls_ref.len_zero);
@@ -104,12 +104,12 @@ impl<const P: usize> PoolInner<P> {
 
     pub(crate) fn debug_large_strings(&self, output: &mut core::fmt::DebugList) {
         for pool_index in 0..P {
-            let mut ptr = self.first_large_string[pool_index].load(Relaxed);
+            let mut ptr = self.first_large_string[pool_index].load(SeqCst);
 
             while let Some(large_string) = unsafe { ptr.as_ref() } {
                 let string = string_from_len_u8::<P>(&large_string.len_zero);
                 output.entry(&string);
-                ptr = large_string.next.load(Relaxed);
+                ptr = large_string.next.load(SeqCst);
             }
         }
     }
@@ -142,7 +142,7 @@ pub(crate) fn read_actual_string_len<const P: usize>(len_u8_ptr: &AtomicU8) -> u
 pub(crate) fn deep_drop<const P: usize>(mut ptr: *const LargeStringHeader<P>) {
     while let Some(large_string) = unsafe { ptr.as_ref() } {
         let mut_ptr = (ptr as usize) as *mut u8;
-        ptr = large_string.next.load(Relaxed);
+        ptr = large_string.next.load(SeqCst);
         unsafe { dealloc(mut_ptr, large_string_layout::<P>(large_string.len)) };
     }
 }
